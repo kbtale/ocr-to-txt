@@ -2,6 +2,8 @@
 
 A modern desktop application that extracts text from images using Optical Character Recognition (OCR) technology.
 
+![OCR Text Extractor Interface](src/media/Interface.png)
+
 ## Features
 
 - **Screenshot Capture**: Capture screenshots directly from the application
@@ -11,6 +13,12 @@ A modern desktop application that extracts text from images using Optical Charac
 - **Image Adjustments**: Adjust contrast, brightness, and sharpness for better OCR results
 - **Multiple Tabs**: Work with multiple images simultaneously
 - **Modern UI**: Clean, intuitive interface with Material Design styling
+
+## Application Interface
+
+The application features a clean, modern interface with multiple tabs for working with different images simultaneously:
+
+![OCR Text Extractor Interface 2](src/media/interface2.png)
 
 ## Requirements
 
