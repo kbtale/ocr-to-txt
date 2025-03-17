@@ -12,7 +12,6 @@ A modern desktop application that extracts text from images using Optical Charac
 - **Text Editing**: Edit extracted text before saving
 - **Image Adjustments**: Adjust contrast, brightness, and sharpness for better OCR results
 - **Multiple Tabs**: Work with multiple images simultaneously
-- **Modern UI**: Clean, intuitive interface with Material Design styling
 
 ## Application Interface
 
@@ -30,7 +29,7 @@ The application features a clean, modern interface with multiple tabs for workin
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/ocr-to-txt.git
+   git clone https://github.com/kbtale/ocr-to-txt.git
    cd ocr-to-txt
    ```
 
