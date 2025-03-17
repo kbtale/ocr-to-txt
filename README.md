@@ -19,13 +19,15 @@ The application features a clean, modern interface with multiple tabs for workin
 
 ![OCR Text Extractor Interface 2](src/media/interface2.png)
 
-## Requirements
-
-- Python 3.7 or higher
-- Tesseract OCR (must be installed separately)
-- Dependencies listed in `requirements.txt`
-
 ## Installation
+
+### Option 1: Windows Installer (Recommended)
+
+1. Download the [OCR Text Extractor Setup](https://github.com/kbtale/ocr-to-txt/releases/latest/download/OCR_Text_Extractor_Setup.exe) from the releases page
+2. Run the installer and follow the on-screen instructions
+3. The installer will automatically install Tesseract OCR for you
+
+### Option 2: Manual Installation
 
 1. Clone this repository:
    ```
@@ -53,14 +55,16 @@ The application features a clean, modern interface with multiple tabs for workin
 ## Quick Start
 
 1. Run the application:
-   ```
-   python src/main.py
-   ```
-   
-   Or use the provided batch file on Windows:
-   ```
-   run.bat
-   ```
+   - If you used the installer, launch from the Start menu or desktop shortcut
+   - If you installed manually:
+     ```
+     python src/main.py
+     ```
+     
+     Or use the provided batch file on Windows:
+     ```
+     run.bat
+     ```
 
 2. Use the "Capture Screenshot" or "Load Image" buttons to get an image into the application
 
