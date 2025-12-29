@@ -6,7 +6,7 @@
   <br>
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/OCR-Tesseract-green?logo=google&logoColor=white" alt="Tesseract" />
-  <img src="https://img.shields.io/badge/Platform-Windows" alt="Platform" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20" alt="Platform" />
   <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
 </p>
 
