@@ -1,6 +1,14 @@
-# OCR Text Extractor
+<h1 align="center">OCR Text Extractor</h1>
 
-A modern desktop application that extracts text from images using Optical Character Recognition (OCR) technology.
+<p align="center">
+  A desktop application that extracts text from images and screenshots using Tesseract OCR.
+  <br>
+  <br>
+  <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/OCR-Tesseract-green?logo=google&logoColor=white" alt="Tesseract" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-gray" alt="Platform" />
+  <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
+</p>
 
 ![OCR Text Extractor Interface](src/media/Interface.png)
 
