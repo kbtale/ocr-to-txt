@@ -504,27 +504,52 @@ class OCRTextExtractor(QMainWindow):
         
         tab_data['image_label'].setPixmap(scaled_pixmap)
         
-    def preprocess_image(self, image):
-        """Simple image preprocessing to improve OCR results"""
+    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True):
+        """Preprocess an OpenCV BGR image and return a PIL Image ready for OCR.
+
+        Applies deskew, contrast, brightness and sharpness adjustments based on
+        slider values passed in.
+        """
         if image is None:
             return None
-            
-        # Convert to PIL image for better processing
+
+        # Ensure numpy array is contiguous
+        image = np.ascontiguousarray(image)
+
+        # Convert to PIL for some enhancements, but perform deskew in OpenCV
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        
+
+        # Deskew using a simple minAreaRect method on the binary image
+        if deskew:
+            try:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                coords = np.column_stack(np.where(thresh > 0))
+                if coords.size > 0:
+                    angle = cv2.minAreaRect(coords)[-1]
+                    if angle < -45:
+                        angle = -(90 + angle)
+                    else:
+                        angle = -angle
+                    if abs(angle) > 0.1:
+                        pil_image = pil_image.rotate(angle, expand=True, fillcolor='white')
+            except Exception:
+                pass
+
         # Convert to grayscale
         gray_image = ImageOps.grayscale(pil_image)
-        
-        # Increase contrast
-        contrast_image = ImageEnhance.Contrast(gray_image).enhance(2.0)
-        
-        # Increase sharpness
-        sharp_image = ImageEnhance.Sharpness(contrast_image).enhance(2.0)
-        
-        # Apply a slight blur to reduce noise
-        blurred_image = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.5))
-        
-        return blurred_image
+
+        # Apply contrast, brightness, and sharpness from UI sliders
+        try:
+            contrast_image = ImageEnhance.Contrast(gray_image).enhance(max(0.1, contrast))
+            bright_image = ImageEnhance.Brightness(contrast_image).enhance(max(0.1, brightness))
+            sharp_image = ImageEnhance.Sharpness(bright_image).enhance(max(0.1, sharpness))
+            # Slight blur to reduce noise after aggressive sharpening
+            processed = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.3))
+        except Exception:
+            processed = gray_image
+
+        return processed
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
