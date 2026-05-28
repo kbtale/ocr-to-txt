@@ -711,6 +711,9 @@ class OCRTextExtractor(QMainWindow):
         self.tab_widget.setStyleSheet(ModernStyle.TAB_STYLE)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.tab_changed)
+
+        # Connect tab bar clicked once for the plus-tab behaviour
+        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
         
         # Add tab widget to main layout
         main_layout.addWidget(self.tab_widget)
@@ -787,8 +790,7 @@ class OCRTextExtractor(QMainWindow):
         # Style the plus tab to look more like a button
         tab_bar.setTabTextColor(plus_tab_index, QColor("#2196F3"))  # Material blue
         
-        # Connect the tab button clicked signal to add a new tab
-        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
+        # tabBarClicked is connected once in initUI; nothing more to do here
         
     def handle_tab_click(self, index):
         """Handle clicks on tabs, specifically the plus tab"""
