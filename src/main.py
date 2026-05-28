@@ -48,15 +48,16 @@ class ModernStyle:
     ACCENT_COLOR = "#ff4081"  # Pink accent
     LIGHT_TEXT_COLOR = "#757575"  # Gray
     HOVER_COLOR = "#E3F2FD"  # Material Blue 50
-    
     BUTTON_STYLE = f"""
         QPushButton {{
             background-color: {PRIMARY_COLOR};
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-size: 14px;
+            border-radius: 6px;
+            padding: 10px 18px;
+            font-size: 13px;
+            min-height: 36px;
+            font-family: 'Segoe UI', Arial, sans-serif;
         }}
         QPushButton:hover {{
             background-color: {SECONDARY_COLOR};
@@ -69,20 +70,20 @@ class ModernStyle:
             color: #757575;
         }}
     """
-    
+
     HELP_BUTTON_STYLE = f"""
         QPushButton {{
             background-color: {PRIMARY_COLOR};
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 2px;
-            font-size: 14px;
+            border-radius: 6px;
+            padding: 4px;
+            font-size: 13px;
             font-weight: bold;
-            min-width: 24px;
-            max-width: 24px;
-            min-height: 24px;
-            max-height: 24px;
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
         }}
         QPushButton:hover {{
             background-color: {SECONDARY_COLOR};
@@ -91,21 +92,21 @@ class ModernStyle:
             background-color: #0D47A1;
         }}
     """
-    
+
     SLIDER_STYLE = f"""
         QSlider::groove:horizontal {{
             border: none;
-            height: 4px;
-            background: #e0e0e0;
-            margin: 2px 0;
-            border-radius: 2px;
+            height: 6px;
+            background: #e6e6e6;
+            margin: 4px 0;
+            border-radius: 3px;
         }}
         QSlider::handle:horizontal {{
             background: {PRIMARY_COLOR};
             border: none;
             width: 18px;
             height: 18px;
-            margin: -7px 0;
+            margin: -6px 0;
             border-radius: 9px;
         }}
         QSlider::handle:horizontal:hover {{
@@ -113,17 +114,18 @@ class ModernStyle:
         }}
         QSlider::sub-page:horizontal {{
             background: {PRIMARY_COLOR};
-            border-radius: 2px;
+            border-radius: 3px;
         }}
     """
-    
+
     TEXTEDIT_STYLE = """
         QTextEdit {
-            border: 1px solid #e0e0e0;
-            border-radius: 4px;
-            padding: 8px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 12px;
             background-color: white;
             font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 12px;
         }
     """
     
@@ -204,20 +206,21 @@ class ModernStyle:
     
     FRAME_STYLE = """
         QFrame {
-            border: 1px solid #e0e0e0;
-            border-radius: 4px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
             background-color: white;
         }
     """
     
     MAIN_STYLE = f"""
         QMainWindow, QDialog {{
-            background-color: {BACKGROUND_COLOR}; 
+            background-color: {BACKGROUND_COLOR};
             color: {TEXT_COLOR};
         }}
         QLabel {{
             color: {TEXT_COLOR};
             font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 12px;
         }}
         QSplitter::handle {{
             background-color: #e0e0e0;
@@ -244,6 +247,21 @@ class ModernStyle:
         }}
         QMenu::item:selected {{
             background-color: {HOVER_COLOR};
+        }}
+    """
+    
+    TOOLBAR_STYLE = f"""
+        QToolBar {{
+            background: transparent;
+            spacing: 6px;
+            padding: 6px;
+        }}
+        QToolButton {{
+            padding: 6px;
+            border-radius: 6px;
+        }}
+        QToolButton:hover {{
+            background: {HOVER_COLOR};
         }}
     """
     
@@ -749,6 +767,7 @@ class OCRTextExtractor(QMainWindow):
         # Create a top toolbar for quick actions
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(20, 20))
+        toolbar.setStyleSheet(ModernStyle.TOOLBAR_STYLE)
         self.addToolBar(toolbar)
 
         open_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Image", self)
@@ -1303,6 +1322,7 @@ def main():
     
     # Set application style
     app.setStyle("Fusion")
+    app.setFont(QFont("Segoe UI", 10))
     
     window = OCRTextExtractor()
     window.show()
