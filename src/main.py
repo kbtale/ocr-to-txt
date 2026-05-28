@@ -437,15 +437,29 @@ class OCRTextExtractor(QMainWindow):
             
             # Convert QPixmap to QImage
             image = screenshot.toImage()
-            
-            # Convert QImage to numpy array
+
+            # Prefer a known RGBA format; fallback to ARGB32/RGB32 when not available
+            try:
+                image = image.convertToFormat(QImage.Format_RGBA8888)
+            except Exception:
+                try:
+                    image = image.convertToFormat(QImage.Format_ARGB32)
+                except Exception:
+                    image = image.convertToFormat(QImage.Format_RGB888)
+
             width, height = image.width(), image.height()
             ptr = image.constBits()
             ptr.setsize(image.byteCount())
-            arr = np.array(ptr).reshape(height, width, 4)  # RGBA
-            
-            # Convert RGBA to BGR (OpenCV format)
-            cv_image = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            arr = np.frombuffer(ptr, np.uint8).reshape((height, width, int(image.depth() / 8)))
+
+            # Handle 4-channel and 3-channel images
+            if arr.shape[2] == 4:
+                cv_image = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            elif arr.shape[2] == 3:
+                cv_image = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+            else:
+                # Fallback: convert grayscale to BGR
+                cv_image = cv2.cvtColor(arr[:, :, 0], cv2.COLOR_GRAY2BGR)
             
             # Get current tab data
             tab_idx = list(self.tabs.keys())[self.current_tab]
@@ -492,10 +506,27 @@ class OCRTextExtractor(QMainWindow):
         if tab_data['cv_image'] is None:
             return
             
-        # Convert OpenCV image to QPixmap
-        height, width, channel = tab_data['cv_image'].shape
-        bytes_per_line = 3 * width
-        q_image = QImage(tab_data['cv_image'].data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        # Convert OpenCV image to QPixmap safely handling channels and memory layout
+        cv_image = np.ascontiguousarray(tab_data['cv_image'])
+        h, w = cv_image.shape[:2]
+        channels = 1 if cv_image.ndim == 2 else cv_image.shape[2]
+
+        if channels == 4:
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGRA2RGB)
+            q_format = QImage.Format_RGB888
+            bytes_per_line = 3 * w
+            q_image = QImage(rgb_image.data, w, h, bytes_per_line, q_format)
+        elif channels == 3:
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            q_format = QImage.Format_RGB888
+            bytes_per_line = 3 * w
+            q_image = QImage(rgb_image.data, w, h, bytes_per_line, q_format)
+        else:
+            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY) if channels == 3 else cv_image
+            q_format = QImage.Format_Grayscale8
+            bytes_per_line = w
+            q_image = QImage(gray.data, w, h, bytes_per_line, q_format)
+
         pixmap = QPixmap.fromImage(q_image)
         
         # Scale pixmap to fit in the label while maintaining aspect ratio
@@ -504,27 +535,52 @@ class OCRTextExtractor(QMainWindow):
         
         tab_data['image_label'].setPixmap(scaled_pixmap)
         
-    def preprocess_image(self, image):
-        """Simple image preprocessing to improve OCR results"""
+    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True):
+        """Preprocess an OpenCV BGR image and return a PIL Image ready for OCR.
+
+        Applies deskew, contrast, brightness and sharpness adjustments based on
+        slider values passed in.
+        """
         if image is None:
             return None
-            
-        # Convert to PIL image for better processing
+
+        # Ensure numpy array is contiguous
+        image = np.ascontiguousarray(image)
+
+        # Convert to PIL for some enhancements, but perform deskew in OpenCV
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        
+
+        # Deskew using a simple minAreaRect method on the binary image
+        if deskew:
+            try:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                coords = np.column_stack(np.where(thresh > 0))
+                if coords.size > 0:
+                    angle = cv2.minAreaRect(coords)[-1]
+                    if angle < -45:
+                        angle = -(90 + angle)
+                    else:
+                        angle = -angle
+                    if abs(angle) > 0.1:
+                        pil_image = pil_image.rotate(angle, expand=True, fillcolor='white')
+            except Exception:
+                pass
+
         # Convert to grayscale
         gray_image = ImageOps.grayscale(pil_image)
-        
-        # Increase contrast
-        contrast_image = ImageEnhance.Contrast(gray_image).enhance(2.0)
-        
-        # Increase sharpness
-        sharp_image = ImageEnhance.Sharpness(contrast_image).enhance(2.0)
-        
-        # Apply a slight blur to reduce noise
-        blurred_image = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.5))
-        
-        return blurred_image
+
+        # Apply contrast, brightness, and sharpness from UI sliders
+        try:
+            contrast_image = ImageEnhance.Contrast(gray_image).enhance(max(0.1, contrast))
+            bright_image = ImageEnhance.Brightness(contrast_image).enhance(max(0.1, brightness))
+            sharp_image = ImageEnhance.Sharpness(bright_image).enhance(max(0.1, sharpness))
+            # Slight blur to reduce noise after aggressive sharpening
+            processed = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.3))
+        except Exception:
+            processed = gray_image
+
+        return processed
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
@@ -543,36 +599,41 @@ class OCRTextExtractor(QMainWindow):
             return
             
         try:
-            # Preprocess the image
-            preprocessed_image = self.preprocess_image(tab_data['cv_image'])
-            
+            # Preprocess the image using current tab slider values and deskew option
+            contrast = tab_data.get('contrast_value', 1.0)
+            brightness = tab_data.get('brightness_value', 1.0)
+            sharpness = tab_data.get('sharpness_value', 1.0)
+            deskew = bool(tab_data.get('deskew_check', True))
+
+            preprocessed_image = self.preprocess_image(
+                tab_data['cv_image'],
+                contrast=contrast,
+                brightness=brightness,
+                sharpness=sharpness,
+                deskew=deskew
+            )
+
             # Get font type for specialized configurations
             font_index = tab_data['font_combo'].currentIndex()
-            
-            # Get PSM mode from the UI
-            psm_mode = tab_data['psm_mode']
-            
+
+            # Get PSM and OEM mode from tab data
+            psm_mode = tab_data.get('psm_mode', 3)
+            oem_mode = tab_data.get('oem_mode', 3)
+
             # Try different configurations to get the best results
             text = ""
-            
-            # First try with the selected PSM mode and default OEM
-            config = f'--psm {psm_mode} --oem 3'
+
+            # Build base config using selected modes
+            config = f'--psm {psm_mode} --oem {oem_mode}'
             text = pytesseract.image_to_string(preprocessed_image, config=config)
-            
-            # If text is empty or very short, try with PSM mode 6 (single block of text)
+
+            # If text is empty or very short, try alternate PSM fallbacks
             if not text.strip() or len(text.strip()) < 5:
-                config = '--psm 6 --oem 3'
-                text = pytesseract.image_to_string(preprocessed_image, config=config)
-                
-                # If still no good results, try with PSM mode 4 (single column of text)
-                if not text.strip() or len(text.strip()) < 5:
-                    config = '--psm 4 --oem 3'
+                for alt_psm in (6, 4, 3):
+                    config = f'--psm {alt_psm} --oem {oem_mode}'
                     text = pytesseract.image_to_string(preprocessed_image, config=config)
-                    
-                    # Last resort, try with PSM mode 3 (fully automatic page segmentation)
-                    if not text.strip() or len(text.strip()) < 5:
-                        config = '--psm 3 --oem 3'
-                        text = pytesseract.image_to_string(preprocessed_image, config=config)
+                    if text.strip() and len(text.strip()) >= 5:
+                        break
             
             # Store text in tab data
             tab_data['ocr_text'] = text
@@ -658,6 +719,13 @@ class OCRTextExtractor(QMainWindow):
             pytesseract.get_tesseract_version()
             return True
         except Exception:
+            # Show dialog to inform the user that Tesseract was not found
+            try:
+                QMessageBox.warning(self, "Tesseract Not Found",
+                                     "Tesseract OCR was not found on this system. Please install it and ensure the executable is available in PATH or set its path in the application.")
+            except Exception:
+                # If GUI isn't available for some reason, silently return False
+                pass
             return False
         
     def initUI(self):
@@ -681,6 +749,9 @@ class OCRTextExtractor(QMainWindow):
         self.tab_widget.setStyleSheet(ModernStyle.TAB_STYLE)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.tab_changed)
+
+        # Connect tab bar clicked once for the plus-tab behaviour
+        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
         
         # Add tab widget to main layout
         main_layout.addWidget(self.tab_widget)
@@ -757,8 +828,7 @@ class OCRTextExtractor(QMainWindow):
         # Style the plus tab to look more like a button
         tab_bar.setTabTextColor(plus_tab_index, QColor("#2196F3"))  # Material blue
         
-        # Connect the tab button clicked signal to add a new tab
-        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
+        # tabBarClicked is connected once in initUI; nothing more to do here
         
     def handle_tab_click(self, index):
         """Handle clicks on tabs, specifically the plus tab"""
