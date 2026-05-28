@@ -14,6 +14,7 @@ from PyQt5.QtGui import QPixmap, QImage, QIcon, QFont, QPalette, QColor
 from PyQt5.QtCore import Qt, pyqtSlot, QSize
 import time
 from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import QToolBar, QAction
 
 # Try to set the path to the Tesseract executable
 tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -294,6 +295,13 @@ class OCRTextExtractor(QMainWindow):
         self.next_tab_id = 0
         
         # Initialize UI
+        self._slider_debounce_timer = QTimer()
+        self._slider_debounce_timer.setSingleShot(True)
+        self._slider_debounce_timer.setInterval(400)
+        self._slider_debounce_timer.timeout.connect(self._on_slider_debounced)
+
+        self.dark_mode = False
+
         self.initUI()
         
         # Check if Tesseract is installed
@@ -738,6 +746,33 @@ class OCRTextExtractor(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
+        # Create a top toolbar for quick actions
+        toolbar = QToolBar()
+        toolbar.setIconSize(QSize(20, 20))
+        self.addToolBar(toolbar)
+
+        open_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Image", self)
+        open_action.triggered.connect(self.load_image)
+        toolbar.addAction(open_action)
+
+        capture_action = QAction(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', 'camera_icon.svg')), "Capture", self)
+        capture_action.triggered.connect(self.capture_screenshot)
+        toolbar.addAction(capture_action)
+
+        process_action = QAction(self.style().standardIcon(QStyle.SP_MediaPlay), "Process OCR", self)
+        process_action.triggered.connect(lambda: self.process_ocr())
+        toolbar.addAction(process_action)
+
+        save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
+        save_action.triggered.connect(self.save_current_text)
+        toolbar.addAction(save_action)
+
+        toolbar.addSeparator()
+
+        theme_action = QAction("Toggle Theme", self)
+        theme_action.triggered.connect(self.toggle_theme)
+        toolbar.addAction(theme_action)
+
         # Create main widget and layout
         main_widget = QWidget()
         main_layout = QVBoxLayout()
@@ -812,6 +847,21 @@ class OCRTextExtractor(QMainWindow):
         
         # Show the window maximized by default
         self.showMaximized()
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            dark_style = ModernStyle.MAIN_STYLE + "\nQWidget { background-color: #2b2b2b; color: #e0e0e0; }"
+            self.setStyleSheet(dark_style)
+        else:
+            self.setStyleSheet(ModernStyle.MAIN_STYLE)
+
+    def _on_slider_debounced(self):
+        try:
+            tab_idx = list(self.tabs.keys())[self.current_tab]
+            self.process_ocr(self.tabs[tab_idx])
+        except Exception:
+            pass
         
     def add_plus_tab(self):
         """Add a plus tab at the end for adding new tabs"""
@@ -1102,9 +1152,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['contrast_value'] = contrast_value
             self.tabs[tab_idx]['contrast_value_label'].setText(f"{contrast_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_brightness(self, value, tab_idx=None):
         """Update brightness value for a tab"""
@@ -1116,9 +1166,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['brightness_value'] = brightness_value
             self.tabs[tab_idx]['brightness_value_label'].setText(f"{brightness_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_sharpness(self, value, tab_idx=None):
         """Update sharpness value for a tab"""
@@ -1130,9 +1180,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['sharpness_value'] = sharpness_value
             self.tabs[tab_idx]['sharpness_value_label'].setText(f"{sharpness_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_psm(self, index, tab_idx=None):
         """Update PSM mode for a tab"""
