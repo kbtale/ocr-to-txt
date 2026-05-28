@@ -568,36 +568,41 @@ class OCRTextExtractor(QMainWindow):
             return
             
         try:
-            # Preprocess the image
-            preprocessed_image = self.preprocess_image(tab_data['cv_image'])
-            
+            # Preprocess the image using current tab slider values and deskew option
+            contrast = tab_data.get('contrast_value', 1.0)
+            brightness = tab_data.get('brightness_value', 1.0)
+            sharpness = tab_data.get('sharpness_value', 1.0)
+            deskew = bool(tab_data.get('deskew_check', True))
+
+            preprocessed_image = self.preprocess_image(
+                tab_data['cv_image'],
+                contrast=contrast,
+                brightness=brightness,
+                sharpness=sharpness,
+                deskew=deskew
+            )
+
             # Get font type for specialized configurations
             font_index = tab_data['font_combo'].currentIndex()
-            
-            # Get PSM mode from the UI
-            psm_mode = tab_data['psm_mode']
-            
+
+            # Get PSM and OEM mode from tab data
+            psm_mode = tab_data.get('psm_mode', 3)
+            oem_mode = tab_data.get('oem_mode', 3)
+
             # Try different configurations to get the best results
             text = ""
-            
-            # First try with the selected PSM mode and default OEM
-            config = f'--psm {psm_mode} --oem 3'
+
+            # Build base config using selected modes
+            config = f'--psm {psm_mode} --oem {oem_mode}'
             text = pytesseract.image_to_string(preprocessed_image, config=config)
-            
-            # If text is empty or very short, try with PSM mode 6 (single block of text)
+
+            # If text is empty or very short, try alternate PSM fallbacks
             if not text.strip() or len(text.strip()) < 5:
-                config = '--psm 6 --oem 3'
-                text = pytesseract.image_to_string(preprocessed_image, config=config)
-                
-                # If still no good results, try with PSM mode 4 (single column of text)
-                if not text.strip() or len(text.strip()) < 5:
-                    config = '--psm 4 --oem 3'
+                for alt_psm in (6, 4, 3):
+                    config = f'--psm {alt_psm} --oem {oem_mode}'
                     text = pytesseract.image_to_string(preprocessed_image, config=config)
-                    
-                    # Last resort, try with PSM mode 3 (fully automatic page segmentation)
-                    if not text.strip() or len(text.strip()) < 5:
-                        config = '--psm 3 --oem 3'
-                        text = pytesseract.image_to_string(preprocessed_image, config=config)
+                    if text.strip() and len(text.strip()) >= 5:
+                        break
             
             # Store text in tab data
             tab_data['ocr_text'] = text
