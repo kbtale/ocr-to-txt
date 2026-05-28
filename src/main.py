@@ -437,15 +437,29 @@ class OCRTextExtractor(QMainWindow):
             
             # Convert QPixmap to QImage
             image = screenshot.toImage()
-            
-            # Convert QImage to numpy array
+
+            # Prefer a known RGBA format; fallback to ARGB32/RGB32 when not available
+            try:
+                image = image.convertToFormat(QImage.Format_RGBA8888)
+            except Exception:
+                try:
+                    image = image.convertToFormat(QImage.Format_ARGB32)
+                except Exception:
+                    image = image.convertToFormat(QImage.Format_RGB888)
+
             width, height = image.width(), image.height()
             ptr = image.constBits()
             ptr.setsize(image.byteCount())
-            arr = np.array(ptr).reshape(height, width, 4)  # RGBA
-            
-            # Convert RGBA to BGR (OpenCV format)
-            cv_image = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            arr = np.frombuffer(ptr, np.uint8).reshape((height, width, int(image.depth() / 8)))
+
+            # Handle 4-channel and 3-channel images
+            if arr.shape[2] == 4:
+                cv_image = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            elif arr.shape[2] == 3:
+                cv_image = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+            else:
+                # Fallback: convert grayscale to BGR
+                cv_image = cv2.cvtColor(arr[:, :, 0], cv2.COLOR_GRAY2BGR)
             
             # Get current tab data
             tab_idx = list(self.tabs.keys())[self.current_tab]
@@ -492,10 +506,27 @@ class OCRTextExtractor(QMainWindow):
         if tab_data['cv_image'] is None:
             return
             
-        # Convert OpenCV image to QPixmap
-        height, width, channel = tab_data['cv_image'].shape
-        bytes_per_line = 3 * width
-        q_image = QImage(tab_data['cv_image'].data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        # Convert OpenCV image to QPixmap safely handling channels and memory layout
+        cv_image = np.ascontiguousarray(tab_data['cv_image'])
+        h, w = cv_image.shape[:2]
+        channels = 1 if cv_image.ndim == 2 else cv_image.shape[2]
+
+        if channels == 4:
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGRA2RGB)
+            q_format = QImage.Format_RGB888
+            bytes_per_line = 3 * w
+            q_image = QImage(rgb_image.data, w, h, bytes_per_line, q_format)
+        elif channels == 3:
+            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            q_format = QImage.Format_RGB888
+            bytes_per_line = 3 * w
+            q_image = QImage(rgb_image.data, w, h, bytes_per_line, q_format)
+        else:
+            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY) if channels == 3 else cv_image
+            q_format = QImage.Format_Grayscale8
+            bytes_per_line = w
+            q_image = QImage(gray.data, w, h, bytes_per_line, q_format)
+
         pixmap = QPixmap.fromImage(q_image)
         
         # Scale pixmap to fit in the label while maintaining aspect ratio
