@@ -719,6 +719,13 @@ class OCRTextExtractor(QMainWindow):
             pytesseract.get_tesseract_version()
             return True
         except Exception:
+            # Show dialog to inform the user that Tesseract was not found
+            try:
+                QMessageBox.warning(self, "Tesseract Not Found",
+                                     "Tesseract OCR was not found on this system. Please install it and ensure the executable is available in PATH or set its path in the application.")
+            except Exception:
+                # If GUI isn't available for some reason, silently return False
+                pass
             return False
         
     def initUI(self):
