@@ -14,6 +14,7 @@ from PyQt5.QtGui import QPixmap, QImage, QIcon, QFont, QPalette, QColor
 from PyQt5.QtCore import Qt, pyqtSlot, QSize
 import time
 from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import QToolBar, QAction
 
 # Try to set the path to the Tesseract executable
 tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -47,15 +48,16 @@ class ModernStyle:
     ACCENT_COLOR = "#ff4081"  # Pink accent
     LIGHT_TEXT_COLOR = "#757575"  # Gray
     HOVER_COLOR = "#E3F2FD"  # Material Blue 50
-    
     BUTTON_STYLE = f"""
         QPushButton {{
             background-color: {PRIMARY_COLOR};
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-size: 14px;
+            border-radius: 6px;
+            padding: 10px 18px;
+            font-size: 13px;
+            min-height: 36px;
+            font-family: 'Segoe UI', Arial, sans-serif;
         }}
         QPushButton:hover {{
             background-color: {SECONDARY_COLOR};
@@ -68,20 +70,20 @@ class ModernStyle:
             color: #757575;
         }}
     """
-    
+
     HELP_BUTTON_STYLE = f"""
         QPushButton {{
             background-color: {PRIMARY_COLOR};
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 2px;
-            font-size: 14px;
+            border-radius: 6px;
+            padding: 4px;
+            font-size: 13px;
             font-weight: bold;
-            min-width: 24px;
-            max-width: 24px;
-            min-height: 24px;
-            max-height: 24px;
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
         }}
         QPushButton:hover {{
             background-color: {SECONDARY_COLOR};
@@ -90,21 +92,21 @@ class ModernStyle:
             background-color: #0D47A1;
         }}
     """
-    
+
     SLIDER_STYLE = f"""
         QSlider::groove:horizontal {{
             border: none;
-            height: 4px;
-            background: #e0e0e0;
-            margin: 2px 0;
-            border-radius: 2px;
+            height: 6px;
+            background: #e6e6e6;
+            margin: 4px 0;
+            border-radius: 3px;
         }}
         QSlider::handle:horizontal {{
             background: {PRIMARY_COLOR};
             border: none;
             width: 18px;
             height: 18px;
-            margin: -7px 0;
+            margin: -6px 0;
             border-radius: 9px;
         }}
         QSlider::handle:horizontal:hover {{
@@ -112,17 +114,18 @@ class ModernStyle:
         }}
         QSlider::sub-page:horizontal {{
             background: {PRIMARY_COLOR};
-            border-radius: 2px;
+            border-radius: 3px;
         }}
     """
-    
+
     TEXTEDIT_STYLE = """
         QTextEdit {
-            border: 1px solid #e0e0e0;
-            border-radius: 4px;
-            padding: 8px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 12px;
             background-color: white;
             font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 12px;
         }
     """
     
@@ -203,20 +206,21 @@ class ModernStyle:
     
     FRAME_STYLE = """
         QFrame {
-            border: 1px solid #e0e0e0;
-            border-radius: 4px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
             background-color: white;
         }
     """
     
     MAIN_STYLE = f"""
         QMainWindow, QDialog {{
-            background-color: {BACKGROUND_COLOR}; 
+            background-color: {BACKGROUND_COLOR};
             color: {TEXT_COLOR};
         }}
         QLabel {{
             color: {TEXT_COLOR};
             font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 12px;
         }}
         QSplitter::handle {{
             background-color: #e0e0e0;
@@ -243,6 +247,21 @@ class ModernStyle:
         }}
         QMenu::item:selected {{
             background-color: {HOVER_COLOR};
+        }}
+    """
+    
+    TOOLBAR_STYLE = f"""
+        QToolBar {{
+            background: transparent;
+            spacing: 6px;
+            padding: 6px;
+        }}
+        QToolButton {{
+            padding: 6px;
+            border-radius: 6px;
+        }}
+        QToolButton:hover {{
+            background: {HOVER_COLOR};
         }}
     """
     
@@ -294,6 +313,13 @@ class OCRTextExtractor(QMainWindow):
         self.next_tab_id = 0
         
         # Initialize UI
+        self._slider_debounce_timer = QTimer()
+        self._slider_debounce_timer.setSingleShot(True)
+        self._slider_debounce_timer.setInterval(400)
+        self._slider_debounce_timer.timeout.connect(self._on_slider_debounced)
+
+        self.dark_mode = False
+
         self.initUI()
         
         # Check if Tesseract is installed
@@ -738,6 +764,34 @@ class OCRTextExtractor(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
+        # Create a top toolbar for quick actions
+        toolbar = QToolBar()
+        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setStyleSheet(ModernStyle.TOOLBAR_STYLE)
+        self.addToolBar(toolbar)
+
+        open_action = QAction(self.style().standardIcon(QStyle.SP_DialogOpenButton), "Load Image", self)
+        open_action.triggered.connect(self.load_image)
+        toolbar.addAction(open_action)
+
+        capture_action = QAction(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', 'camera_icon.svg')), "Capture", self)
+        capture_action.triggered.connect(self.capture_screenshot)
+        toolbar.addAction(capture_action)
+
+        process_action = QAction(self.style().standardIcon(QStyle.SP_MediaPlay), "Process OCR", self)
+        process_action.triggered.connect(lambda: self.process_ocr())
+        toolbar.addAction(process_action)
+
+        save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
+        save_action.triggered.connect(self.save_current_text)
+        toolbar.addAction(save_action)
+
+        toolbar.addSeparator()
+
+        theme_action = QAction("Toggle Theme", self)
+        theme_action.triggered.connect(self.toggle_theme)
+        toolbar.addAction(theme_action)
+
         # Create main widget and layout
         main_widget = QWidget()
         main_layout = QVBoxLayout()
@@ -812,6 +866,21 @@ class OCRTextExtractor(QMainWindow):
         
         # Show the window maximized by default
         self.showMaximized()
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        if self.dark_mode:
+            dark_style = ModernStyle.MAIN_STYLE + "\nQWidget { background-color: #2b2b2b; color: #e0e0e0; }"
+            self.setStyleSheet(dark_style)
+        else:
+            self.setStyleSheet(ModernStyle.MAIN_STYLE)
+
+    def _on_slider_debounced(self):
+        try:
+            tab_idx = list(self.tabs.keys())[self.current_tab]
+            self.process_ocr(self.tabs[tab_idx])
+        except Exception:
+            pass
         
     def add_plus_tab(self):
         """Add a plus tab at the end for adding new tabs"""
@@ -1102,9 +1171,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['contrast_value'] = contrast_value
             self.tabs[tab_idx]['contrast_value_label'].setText(f"{contrast_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_brightness(self, value, tab_idx=None):
         """Update brightness value for a tab"""
@@ -1116,9 +1185,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['brightness_value'] = brightness_value
             self.tabs[tab_idx]['brightness_value_label'].setText(f"{brightness_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_sharpness(self, value, tab_idx=None):
         """Update sharpness value for a tab"""
@@ -1130,9 +1199,9 @@ class OCRTextExtractor(QMainWindow):
             self.tabs[tab_idx]['sharpness_value'] = sharpness_value
             self.tabs[tab_idx]['sharpness_value_label'].setText(f"{sharpness_value:.1f}")
             
-            # Process OCR if image is loaded
+            # Debounce OCR processing to avoid repeated calls while sliding
             if self.tabs[tab_idx]['cv_image'] is not None:
-                self.process_ocr(self.tabs[tab_idx])
+                self._slider_debounce_timer.start()
                 
     def update_psm(self, index, tab_idx=None):
         """Update PSM mode for a tab"""
@@ -1253,6 +1322,7 @@ def main():
     
     # Set application style
     app.setStyle("Fusion")
+    app.setFont(QFont("Segoe UI", 10))
     
     window = OCRTextExtractor()
     window.show()
