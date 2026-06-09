@@ -639,6 +639,129 @@ class OCRTextExtractor(QMainWindow):
             processed = pil_image
 
         return processed
+
+    def estimate_skew_angle(self, image):
+        if image is None:
+            return 0.0
+
+        try:
+            gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=max(30, gray.shape[1] // 8), maxLineGap=20)
+            angles = []
+
+            if lines is not None:
+                for line in lines[:, 0]:
+                    x1, y1, x2, y2 = line
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    if abs(dx) < 1:
+                        continue
+                    angle = np.degrees(np.arctan2(dy, dx))
+                    if -45 <= angle <= 45:
+                        angles.append(angle)
+
+            if angles:
+                return float(np.median(angles))
+
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            coords = np.column_stack(np.where(thresh > 0))
+            if coords.size > 0:
+                rect = cv2.minAreaRect(coords)
+                angle = rect[-1]
+                if angle < -45:
+                    angle = -(90 + angle)
+                else:
+                    angle = -angle
+                return float(angle)
+        except Exception:
+            pass
+
+        return 0.0
+
+    def deskew_region(self, image):
+        if image is None:
+            return image
+
+        angle = self.estimate_skew_angle(image)
+        if abs(angle) < 0.5:
+            return image
+
+        try:
+            h, w = image.shape[:2]
+            center = (w // 2, h // 2)
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            return cv2.warpAffine(image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        except Exception:
+            return image
+
+    def extract_layout_regions(self, image):
+        if image is None:
+            return []
+
+        try:
+            gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
+            connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, horizontal_kernel, iterations=1)
+            connected = cv2.dilate(connected, horizontal_kernel, iterations=1)
+
+            contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            boxes = []
+            height, width = gray.shape[:2]
+            min_area = max(400, (height * width) // 5000)
+
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = w * h
+                if area < min_area:
+                    continue
+                if w < 20 or h < 20:
+                    continue
+                boxes.append((x, y, w, h))
+
+            if not boxes:
+                return [(0, 0, width, height)]
+
+            boxes.sort(key=lambda box: (box[0], box[1]))
+
+            columns = []
+            current_column = [boxes[0]]
+            current_left = boxes[0][0]
+            current_right = boxes[0][0] + boxes[0][2]
+            column_gap_threshold = max(60, width // 12)
+
+            for box in boxes[1:]:
+                x, y, w, h = box
+                if x - current_right <= column_gap_threshold:
+                    current_column.append(box)
+                    current_right = max(current_right, x + w)
+                else:
+                    columns.append(current_column)
+                    current_column = [box]
+                    current_left = x
+                    current_right = x + w
+
+            columns.append(current_column)
+
+            ordered_regions = []
+            columns.sort(key=lambda column: min(box[0] for box in column))
+            for column in columns:
+                column.sort(key=lambda box: box[1])
+                for x, y, w, h in column:
+                    pad_x = max(10, w // 20)
+                    pad_y = max(10, h // 20)
+                    x1 = max(0, x - pad_x)
+                    y1 = max(0, y - pad_y)
+                    x2 = min(width, x + w + pad_x)
+                    y2 = min(height, y + h + pad_y)
+                    ordered_regions.append((x1, y1, x2 - x1, y2 - y1))
+
+            return ordered_regions
+        except Exception:
+            h, w = image.shape[:2]
+            return [(0, 0, w, h)]
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
@@ -673,6 +796,11 @@ class OCRTextExtractor(QMainWindow):
                 use_adaptive_threshold=use_adaptive
             )
 
+            processed_cv = np.array(preprocessed_image.convert('RGB'))
+            processed_cv = cv2.cvtColor(processed_cv, cv2.COLOR_RGB2BGR)
+
+            regions = self.extract_layout_regions(processed_cv)
+
             # Get font type for specialized configurations
             font_index = tab_data['font_combo'].currentIndex()
 
@@ -683,17 +811,25 @@ class OCRTextExtractor(QMainWindow):
             # Try different configurations to get the best results
             text = ""
 
-            # Build base config using selected modes
-            config = f'--psm {psm_mode} --oem {oem_mode}'
-            text = pytesseract.image_to_string(preprocessed_image, config=config)
+            block_texts = []
+            for x, y, w, h in regions:
+                region = processed_cv[y:y + h, x:x + w]
+                region = self.deskew_region(region)
 
-            # If text is empty or very short, try alternate PSM fallbacks
-            if not text.strip() or len(text.strip()) < 5:
-                for alt_psm in (6, 4, 3):
-                    config = f'--psm {alt_psm} --oem {oem_mode}'
-                    text = pytesseract.image_to_string(preprocessed_image, config=config)
-                    if text.strip() and len(text.strip()) >= 5:
-                        break
+                config = f'--psm {psm_mode} --oem {oem_mode}'
+                region_text = pytesseract.image_to_string(region, config=config)
+
+                if not region_text.strip() or len(region_text.strip()) < 5:
+                    for alt_psm in (6, 4, 3):
+                        config = f'--psm {alt_psm} --oem {oem_mode}'
+                        region_text = pytesseract.image_to_string(region, config=config)
+                        if region_text.strip() and len(region_text.strip()) >= 5:
+                            break
+
+                if region_text.strip():
+                    block_texts.append(region_text.strip())
+
+            text = "\n\n".join(block_texts)
             
             # Store text in tab data
             tab_data['ocr_text'] = text
