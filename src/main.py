@@ -762,6 +762,30 @@ class OCRTextExtractor(QMainWindow):
         except Exception:
             h, w = image.shape[:2]
             return [(0, 0, w, h)]
+
+    def score_psm_candidate(self, image, psm_mode, oem_mode):
+        try:
+            config = f'--psm {psm_mode} --oem {oem_mode}'
+            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+            confidences = []
+            word_count = 0
+
+            for text, conf in zip(data.get('text', []), data.get('conf', [])):
+                if text and text.strip():
+                    word_count += 1
+                try:
+                    conf_value = float(conf)
+                except Exception:
+                    continue
+                if conf_value >= 0:
+                    confidences.append(conf_value)
+
+            if confidences:
+                return float(sum(confidences) / len(confidences)), word_count
+
+            return -1.0, word_count
+        except Exception:
+            return -1.0, 0
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
@@ -816,15 +840,24 @@ class OCRTextExtractor(QMainWindow):
                 region = processed_cv[y:y + h, x:x + w]
                 region = self.deskew_region(region)
 
-                config = f'--psm {psm_mode} --oem {oem_mode}'
-                region_text = pytesseract.image_to_string(region, config=config)
+                candidate_psms = []
+                for candidate in (psm_mode, 6, 4, 3):
+                    if candidate not in candidate_psms:
+                        candidate_psms.append(candidate)
 
-                if not region_text.strip() or len(region_text.strip()) < 5:
-                    for alt_psm in (6, 4, 3):
-                        config = f'--psm {alt_psm} --oem {oem_mode}'
-                        region_text = pytesseract.image_to_string(region, config=config)
-                        if region_text.strip() and len(region_text.strip()) >= 5:
-                            break
+                best_psm = candidate_psms[0]
+                best_score = -1.0
+                best_word_count = -1
+
+                for candidate in candidate_psms:
+                    score, word_count = self.score_psm_candidate(region, candidate, oem_mode)
+                    if score > best_score or (score == best_score and word_count > best_word_count):
+                        best_score = score
+                        best_word_count = word_count
+                        best_psm = candidate
+
+                config = f'--psm {best_psm} --oem {oem_mode}'
+                region_text = pytesseract.image_to_string(region, config=config)
 
                 if region_text.strip():
                     block_texts.append(region_text.strip())
