@@ -561,26 +561,24 @@ class OCRTextExtractor(QMainWindow):
         
         tab_data['image_label'].setPixmap(scaled_pixmap)
         
-    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True):
+    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True, use_adaptive_threshold=False):
         """Preprocess an OpenCV BGR image and return a PIL Image ready for OCR.
 
-        Applies deskew, contrast, brightness and sharpness adjustments based on
-        slider values passed in.
+        Uses CLAHE for local contrast, denoising, and optional adaptive thresholding.
+        Final contrast/brightness/sharpness adjustments are applied via PIL.
         """
         if image is None:
             return None
 
-        # Ensure numpy array is contiguous
         image = np.ascontiguousarray(image)
 
-        # Convert to PIL for some enhancements, but perform deskew in OpenCV
-        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        img = image.copy()
 
-        # Deskew using a simple minAreaRect method on the binary image
+        # Deskew using minAreaRect on a thresholded image
         if deskew:
             try:
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                gray_d = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray_d, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 coords = np.column_stack(np.where(thresh > 0))
                 if coords.size > 0:
                     angle = cv2.minAreaRect(coords)[-1]
@@ -588,23 +586,57 @@ class OCRTextExtractor(QMainWindow):
                         angle = -(90 + angle)
                     else:
                         angle = -angle
-                    if abs(angle) > 0.1:
-                        pil_image = pil_image.rotate(angle, expand=True, fillcolor='white')
+                    if abs(angle) > 0.5:
+                        (h, w) = img.shape[:2]
+                        center = (w // 2, h // 2)
+                        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                        img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             except Exception:
                 pass
 
-        # Convert to grayscale
-        gray_image = ImageOps.grayscale(pil_image)
+        # Convert to grayscale for CLAHE
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Apply contrast, brightness, and sharpness from UI sliders
+        # CLAHE
         try:
-            contrast_image = ImageEnhance.Contrast(gray_image).enhance(max(0.1, contrast))
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+        except Exception:
+            pass
+
+        # Denoise while preserving edges
+        try:
+            gray = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        except Exception:
+            pass
+
+        # Optional adaptive thresholding (useful for low-contrast scanned text)
+        if use_adaptive_threshold:
+            try:
+                th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, 11, 2)
+                processed_cv = th
+            except Exception:
+                processed_cv = gray
+        else:
+            processed_cv = gray
+
+        # Convert to PIL Image (ensure 3-channel RGB for later enhancements)
+        try:
+            rgb = cv2.cvtColor(processed_cv, cv2.COLOR_GRAY2RGB)
+        except Exception:
+            rgb = cv2.merge([processed_cv, processed_cv, processed_cv])
+
+        pil_image = Image.fromarray(rgb)
+
+        # Apply contrast, brightness, and sharpness via PIL
+        try:
+            contrast_image = ImageEnhance.Contrast(pil_image).enhance(max(0.1, contrast))
             bright_image = ImageEnhance.Brightness(contrast_image).enhance(max(0.1, brightness))
             sharp_image = ImageEnhance.Sharpness(bright_image).enhance(max(0.1, sharpness))
-            # Slight blur to reduce noise after aggressive sharpening
-            processed = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.3))
+            processed = sharp_image
         except Exception:
-            processed = gray_image
+            processed = pil_image
 
         return processed
         
@@ -630,13 +662,15 @@ class OCRTextExtractor(QMainWindow):
             brightness = tab_data.get('brightness_value', 1.0)
             sharpness = tab_data.get('sharpness_value', 1.0)
             deskew = bool(tab_data.get('deskew_check', True))
+            use_adaptive = bool(tab_data.get('use_adaptive_threshold', False))
 
             preprocessed_image = self.preprocess_image(
                 tab_data['cv_image'],
                 contrast=contrast,
                 brightness=brightness,
                 sharpness=sharpness,
-                deskew=deskew
+                deskew=deskew,
+                use_adaptive_threshold=use_adaptive
             )
 
             # Get font type for specialized configurations
@@ -1017,6 +1051,14 @@ class OCRTextExtractor(QMainWindow):
         deskew_layout.addWidget(deskew_check)
         processing_layout.addLayout(deskew_layout)
         
+        # Adaptive threshold checkbox
+        adaptive_layout = QHBoxLayout()
+        adaptive_check = QCheckBox("Use adaptive threshold")
+        adaptive_check.setChecked(False)
+        adaptive_check.setStyleSheet(ModernStyle.CHECKBOX_STYLE)
+        adaptive_layout.addWidget(adaptive_check)
+        processing_layout.addLayout(adaptive_layout)
+        
         # Add processing group to controls layout
         controls_layout.addWidget(processing_group)
         
@@ -1137,6 +1179,7 @@ class OCRTextExtractor(QMainWindow):
         tab_data['sharpness_slider'] = sharpness_slider
         tab_data['sharpness_value_label'] = sharpness_value_label
         tab_data['deskew_check'] = deskew_check
+        tab_data['use_adaptive_threshold'] = adaptive_check
         tab_data['font_combo'] = font_combo
         tab_data['psm_combo'] = psm_combo
         tab_data['oem_combo'] = oem_combo
