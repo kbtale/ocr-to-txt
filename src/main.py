@@ -561,26 +561,24 @@ class OCRTextExtractor(QMainWindow):
         
         tab_data['image_label'].setPixmap(scaled_pixmap)
         
-    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True):
+    def preprocess_image(self, image, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True, use_adaptive_threshold=False):
         """Preprocess an OpenCV BGR image and return a PIL Image ready for OCR.
 
-        Applies deskew, contrast, brightness and sharpness adjustments based on
-        slider values passed in.
+        Uses CLAHE for local contrast, denoising, and optional adaptive thresholding.
+        Final contrast/brightness/sharpness adjustments are applied via PIL.
         """
         if image is None:
             return None
 
-        # Ensure numpy array is contiguous
         image = np.ascontiguousarray(image)
 
-        # Convert to PIL for some enhancements, but perform deskew in OpenCV
-        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        img = image.copy()
 
-        # Deskew using a simple minAreaRect method on the binary image
+        # Deskew using minAreaRect on a thresholded image
         if deskew:
             try:
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                gray_d = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray_d, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 coords = np.column_stack(np.where(thresh > 0))
                 if coords.size > 0:
                     angle = cv2.minAreaRect(coords)[-1]
@@ -588,25 +586,266 @@ class OCRTextExtractor(QMainWindow):
                         angle = -(90 + angle)
                     else:
                         angle = -angle
-                    if abs(angle) > 0.1:
-                        pil_image = pil_image.rotate(angle, expand=True, fillcolor='white')
+                    if abs(angle) > 0.5:
+                        (h, w) = img.shape[:2]
+                        center = (w // 2, h // 2)
+                        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                        img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             except Exception:
                 pass
 
-        # Convert to grayscale
-        gray_image = ImageOps.grayscale(pil_image)
+        # Convert to grayscale for CLAHE
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Apply contrast, brightness, and sharpness from UI sliders
+        # CLAHE
         try:
-            contrast_image = ImageEnhance.Contrast(gray_image).enhance(max(0.1, contrast))
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+        except Exception:
+            pass
+
+        # Denoise while preserving edges
+        try:
+            gray = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        except Exception:
+            pass
+
+        # Optional adaptive thresholding (useful for low-contrast scanned text)
+        if use_adaptive_threshold:
+            try:
+                th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, 11, 2)
+                processed_cv = th
+            except Exception:
+                processed_cv = gray
+        else:
+            processed_cv = gray
+
+        # Convert to PIL Image (ensure 3-channel RGB for later enhancements)
+        try:
+            rgb = cv2.cvtColor(processed_cv, cv2.COLOR_GRAY2RGB)
+        except Exception:
+            rgb = cv2.merge([processed_cv, processed_cv, processed_cv])
+
+        pil_image = Image.fromarray(rgb)
+
+        # Apply contrast, brightness, and sharpness via PIL
+        try:
+            contrast_image = ImageEnhance.Contrast(pil_image).enhance(max(0.1, contrast))
             bright_image = ImageEnhance.Brightness(contrast_image).enhance(max(0.1, brightness))
             sharp_image = ImageEnhance.Sharpness(bright_image).enhance(max(0.1, sharpness))
-            # Slight blur to reduce noise after aggressive sharpening
-            processed = sharp_image.filter(ImageFilter.GaussianBlur(radius=0.3))
+            processed = sharp_image
         except Exception:
-            processed = gray_image
+            processed = pil_image
 
         return processed
+
+    def estimate_skew_angle(self, image):
+        if image is None:
+            return 0.0
+
+        try:
+            gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=max(30, gray.shape[1] // 8), maxLineGap=20)
+            angles = []
+
+            if lines is not None:
+                for line in lines[:, 0]:
+                    x1, y1, x2, y2 = line
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    if abs(dx) < 1:
+                        continue
+                    angle = np.degrees(np.arctan2(dy, dx))
+                    if -45 <= angle <= 45:
+                        angles.append(angle)
+
+            if angles:
+                return float(np.median(angles))
+
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            coords = np.column_stack(np.where(thresh > 0))
+            if coords.size > 0:
+                rect = cv2.minAreaRect(coords)
+                angle = rect[-1]
+                if angle < -45:
+                    angle = -(90 + angle)
+                else:
+                    angle = -angle
+                return float(angle)
+        except Exception:
+            pass
+
+        return 0.0
+
+    def deskew_region(self, image):
+        if image is None:
+            return image
+
+        angle = self.estimate_skew_angle(image)
+        if abs(angle) < 0.5:
+            return image
+
+        try:
+            h, w = image.shape[:2]
+            center = (w // 2, h // 2)
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            return cv2.warpAffine(image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        except Exception:
+            return image
+
+    def extract_layout_regions(self, image):
+        if image is None:
+            return []
+
+        try:
+            gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
+            connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, horizontal_kernel, iterations=1)
+            connected = cv2.dilate(connected, horizontal_kernel, iterations=1)
+
+            contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            boxes = []
+            height, width = gray.shape[:2]
+            min_area = max(400, (height * width) // 5000)
+
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = w * h
+                if area < min_area:
+                    continue
+                if w < 20 or h < 20:
+                    continue
+                boxes.append((x, y, w, h))
+
+            if not boxes:
+                return [(0, 0, width, height)]
+
+            boxes.sort(key=lambda box: (box[0], box[1]))
+
+            columns = []
+            current_column = [boxes[0]]
+            current_left = boxes[0][0]
+            current_right = boxes[0][0] + boxes[0][2]
+            column_gap_threshold = max(60, width // 12)
+
+            for box in boxes[1:]:
+                x, y, w, h = box
+                if x - current_right <= column_gap_threshold:
+                    current_column.append(box)
+                    current_right = max(current_right, x + w)
+                else:
+                    columns.append(current_column)
+                    current_column = [box]
+                    current_left = x
+                    current_right = x + w
+
+            columns.append(current_column)
+
+            ordered_regions = []
+            columns.sort(key=lambda column: min(box[0] for box in column))
+            for column in columns:
+                column.sort(key=lambda box: box[1])
+                for x, y, w, h in column:
+                    pad_x = max(10, w // 20)
+                    pad_y = max(10, h // 20)
+                    x1 = max(0, x - pad_x)
+                    y1 = max(0, y - pad_y)
+                    x2 = min(width, x + w + pad_x)
+                    y2 = min(height, y + h + pad_y)
+                    ordered_regions.append((x1, y1, x2 - x1, y2 - y1))
+
+            return ordered_regions
+        except Exception:
+            h, w = image.shape[:2]
+            return [(0, 0, w, h)]
+
+    def score_psm_candidate(self, image, psm_mode, oem_mode):
+        try:
+            config = f'--psm {psm_mode} --oem {oem_mode}'
+            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+            confidences = []
+            word_count = 0
+
+            for text, conf in zip(data.get('text', []), data.get('conf', [])):
+                if text and text.strip():
+                    word_count += 1
+                try:
+                    conf_value = float(conf)
+                except Exception:
+                    continue
+                if conf_value >= 0:
+                    confidences.append(conf_value)
+
+            if confidences:
+                return float(sum(confidences) / len(confidences)), word_count
+
+            return -1.0, word_count
+        except Exception:
+            return -1.0, 0
+
+    def reconstruct_text_from_data(self, image, psm_mode, oem_mode):
+        try:
+            config = f'--psm {psm_mode} --oem {oem_mode}'
+            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+
+            items = []
+            for index, text in enumerate(data.get('text', [])):
+                if not text or not text.strip():
+                    continue
+
+                try:
+                    conf_value = float(data.get('conf', [])[index])
+                except Exception:
+                    conf_value = -1.0
+
+                if conf_value < 0:
+                    continue
+
+                items.append({
+                    'block': int(data.get('block_num', [0])[index]),
+                    'par': int(data.get('par_num', [0])[index]),
+                    'line': int(data.get('line_num', [0])[index]),
+                    'left': int(data.get('left', [0])[index]),
+                    'top': int(data.get('top', [0])[index]),
+                    'text': text.strip(),
+                })
+
+            if not items:
+                return ""
+
+            items.sort(key=lambda item: (item['block'], item['par'], item['line'], item['top'], item['left']))
+
+            lines = []
+            current_key = None
+            current_block = None
+            current_words = []
+
+            for item in items:
+                group_key = (item['block'], item['par'], item['line'])
+                if current_key is None:
+                    current_key = group_key
+                    current_block = item['block']
+                elif group_key != current_key:
+                    if current_words:
+                        lines.append(" ".join(current_words))
+                        current_words = []
+                    if item['block'] != current_block:
+                        lines.append("")
+                    current_key = group_key
+                    current_block = item['block']
+
+                current_words.append(item['text'])
+
+            if current_words:
+                lines.append(" ".join(current_words))
+
+            return "\n".join(lines).strip()
+        except Exception:
+            return ""
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
@@ -630,14 +869,21 @@ class OCRTextExtractor(QMainWindow):
             brightness = tab_data.get('brightness_value', 1.0)
             sharpness = tab_data.get('sharpness_value', 1.0)
             deskew = bool(tab_data.get('deskew_check', True))
+            use_adaptive = bool(tab_data.get('use_adaptive_threshold', False))
 
             preprocessed_image = self.preprocess_image(
                 tab_data['cv_image'],
                 contrast=contrast,
                 brightness=brightness,
                 sharpness=sharpness,
-                deskew=deskew
+                deskew=deskew,
+                use_adaptive_threshold=use_adaptive
             )
+
+            processed_cv = np.array(preprocessed_image.convert('RGB'))
+            processed_cv = cv2.cvtColor(processed_cv, cv2.COLOR_RGB2BGR)
+
+            regions = self.extract_layout_regions(processed_cv)
 
             # Get font type for specialized configurations
             font_index = tab_data['font_combo'].currentIndex()
@@ -649,17 +895,33 @@ class OCRTextExtractor(QMainWindow):
             # Try different configurations to get the best results
             text = ""
 
-            # Build base config using selected modes
-            config = f'--psm {psm_mode} --oem {oem_mode}'
-            text = pytesseract.image_to_string(preprocessed_image, config=config)
+            block_texts = []
+            for x, y, w, h in regions:
+                region = processed_cv[y:y + h, x:x + w]
+                region = self.deskew_region(region)
 
-            # If text is empty or very short, try alternate PSM fallbacks
-            if not text.strip() or len(text.strip()) < 5:
-                for alt_psm in (6, 4, 3):
-                    config = f'--psm {alt_psm} --oem {oem_mode}'
-                    text = pytesseract.image_to_string(preprocessed_image, config=config)
-                    if text.strip() and len(text.strip()) >= 5:
-                        break
+                candidate_psms = []
+                for candidate in (psm_mode, 6, 4, 3):
+                    if candidate not in candidate_psms:
+                        candidate_psms.append(candidate)
+
+                best_psm = candidate_psms[0]
+                best_score = -1.0
+                best_word_count = -1
+
+                for candidate in candidate_psms:
+                    score, word_count = self.score_psm_candidate(region, candidate, oem_mode)
+                    if score > best_score or (score == best_score and word_count > best_word_count):
+                        best_score = score
+                        best_word_count = word_count
+                        best_psm = candidate
+
+                region_text = self.reconstruct_text_from_data(region, best_psm, oem_mode)
+
+                if region_text.strip():
+                    block_texts.append(region_text.strip())
+
+            text = "\n\n".join(block_texts)
             
             # Store text in tab data
             tab_data['ocr_text'] = text
@@ -1017,6 +1279,14 @@ class OCRTextExtractor(QMainWindow):
         deskew_layout.addWidget(deskew_check)
         processing_layout.addLayout(deskew_layout)
         
+        # Adaptive threshold checkbox
+        adaptive_layout = QHBoxLayout()
+        adaptive_check = QCheckBox("Use adaptive threshold")
+        adaptive_check.setChecked(False)
+        adaptive_check.setStyleSheet(ModernStyle.CHECKBOX_STYLE)
+        adaptive_layout.addWidget(adaptive_check)
+        processing_layout.addLayout(adaptive_layout)
+        
         # Add processing group to controls layout
         controls_layout.addWidget(processing_group)
         
@@ -1137,6 +1407,7 @@ class OCRTextExtractor(QMainWindow):
         tab_data['sharpness_slider'] = sharpness_slider
         tab_data['sharpness_value_label'] = sharpness_value_label
         tab_data['deskew_check'] = deskew_check
+        tab_data['use_adaptive_threshold'] = adaptive_check
         tab_data['font_combo'] = font_combo
         tab_data['psm_combo'] = psm_combo
         tab_data['oem_combo'] = oem_combo
