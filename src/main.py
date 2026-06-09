@@ -786,6 +786,66 @@ class OCRTextExtractor(QMainWindow):
             return -1.0, word_count
         except Exception:
             return -1.0, 0
+
+    def reconstruct_text_from_data(self, image, psm_mode, oem_mode):
+        try:
+            config = f'--psm {psm_mode} --oem {oem_mode}'
+            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+
+            items = []
+            for index, text in enumerate(data.get('text', [])):
+                if not text or not text.strip():
+                    continue
+
+                try:
+                    conf_value = float(data.get('conf', [])[index])
+                except Exception:
+                    conf_value = -1.0
+
+                if conf_value < 0:
+                    continue
+
+                items.append({
+                    'block': int(data.get('block_num', [0])[index]),
+                    'par': int(data.get('par_num', [0])[index]),
+                    'line': int(data.get('line_num', [0])[index]),
+                    'left': int(data.get('left', [0])[index]),
+                    'top': int(data.get('top', [0])[index]),
+                    'text': text.strip(),
+                })
+
+            if not items:
+                return ""
+
+            items.sort(key=lambda item: (item['block'], item['par'], item['line'], item['top'], item['left']))
+
+            lines = []
+            current_key = None
+            current_block = None
+            current_words = []
+
+            for item in items:
+                group_key = (item['block'], item['par'], item['line'])
+                if current_key is None:
+                    current_key = group_key
+                    current_block = item['block']
+                elif group_key != current_key:
+                    if current_words:
+                        lines.append(" ".join(current_words))
+                        current_words = []
+                    if item['block'] != current_block:
+                        lines.append("")
+                    current_key = group_key
+                    current_block = item['block']
+
+                current_words.append(item['text'])
+
+            if current_words:
+                lines.append(" ".join(current_words))
+
+            return "\n".join(lines).strip()
+        except Exception:
+            return ""
         
     def process_ocr(self, tab_data=None):
         """Process OCR on the current image"""
@@ -856,8 +916,7 @@ class OCRTextExtractor(QMainWindow):
                         best_word_count = word_count
                         best_psm = candidate
 
-                config = f'--psm {best_psm} --oem {oem_mode}'
-                region_text = pytesseract.image_to_string(region, config=config)
+                region_text = self.reconstruct_text_from_data(region, best_psm, oem_mode)
 
                 if region_text.strip():
                     block_texts.append(region_text.strip())
