@@ -9,14 +9,30 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QPushButton, QLabel, QTextEdit, 
                             QFileDialog, QMessageBox, QSplitter, QSlider,
                             QFrame, QGroupBox, QCheckBox, QComboBox, 
-                            QTabWidget, QTabBar, QDialog, QStyle)
-from PyQt5.QtGui import QPixmap, QImage, QIcon, QFont, QPalette, QColor
+                            QTabWidget, QTabBar, QDialog, QStyle, QProgressBar, QShortcut)
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QFont, QPalette, QColor, QKeySequence
 from PyQt5.QtCore import Qt, pyqtSlot, QSize
 import time
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QToolBar, QAction
+import logging
+import json
+from pathlib import Path
 
 # Try to set the path to the Tesseract executable
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SETTINGS_PATH = PROJECT_ROOT / 'settings.json'
+LOG_DIR = PROJECT_ROOT / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / 'ocr.log'
+
+logging.basicConfig(
+    filename=str(LOG_FILE),
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
+
+# Default tesseract path check; will be overridden by settings if provided
 tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 if os.path.exists(tesseract_path):
     pytesseract.pytesseract.tesseract_cmd = tesseract_path
@@ -27,16 +43,28 @@ else:
         r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
         r'C:\Tesseract-OCR\tesseract.exe'
     ]
-    
     found = False
     for path in common_paths:
         if os.path.exists(path):
             pytesseract.pytesseract.tesseract_cmd = path
             found = True
             break
-    
     if not found:
-        print("Warning: Tesseract OCR not found. Please install it and set the correct path.")
+        logging.warning('Tesseract OCR not found in common locations; please set path in Settings.')
+
+def load_settings():
+    try:
+        if SETTINGS_PATH.exists():
+            with open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                tpath = data.get('tesseract_path')
+                if tpath and os.path.exists(tpath):
+                    pytesseract.pytesseract.tesseract_cmd = tpath
+                    logging.info(f'Set Tesseract path from settings: {tpath}')
+    except Exception:
+        logging.exception('Failed to load settings')
+
+load_settings()
 
 class ModernStyle:
     """Class to define modern styling for the application"""
@@ -151,11 +179,6 @@ class ModernStyle:
             border-left: 1px solid #e0e0e0;
             border-top-right-radius: 4px;
             border-bottom-right-radius: 4px;
-        }}
-        QComboBox::down-arrow {{
-            image: url(:/icons/dropdown.png);
-            width: 16px;
-            height: 16px;
         }}
         QComboBox QAbstractItemView {{
             border: 1px solid #e0e0e0;
@@ -304,26 +327,31 @@ class ModernStyle:
     """
 
 class OCRTextExtractor(QMainWindow):
-    def __init__(self):
+    def __init__(self, headless=False):
         super().__init__()
-        
+
+        # Headless mode skips UI initialization (used by CLI)
+        self.headless = bool(headless)
+
         # Initialize variables
         self.tabs = {}  # Dictionary to store tab data
         self.current_tab = 0
         self.next_tab_id = 0
-        
-        # Initialize UI
-        self._slider_debounce_timer = QTimer()
-        self._slider_debounce_timer.setSingleShot(True)
-        self._slider_debounce_timer.setInterval(400)
-        self._slider_debounce_timer.timeout.connect(self._on_slider_debounced)
+
+        # Initialize debounce timer (only used in UI)
+        self._slider_debounce_timer = QTimer() if not self.headless else None
+        if self._slider_debounce_timer is not None:
+            self._slider_debounce_timer.setSingleShot(True)
+            self._slider_debounce_timer.setInterval(400)
+            self._slider_debounce_timer.timeout.connect(self._on_slider_debounced)
 
         self.dark_mode = False
 
-        self.initUI()
-        
-        # Check if Tesseract is installed
-        self.check_tesseract()
+        if not self.headless:
+            self.initUI()
+
+            # Check if Tesseract is installed
+            self.check_tesseract()
         
     def close_tab(self, index):
         """Close a tab and remove its data"""
@@ -864,6 +892,7 @@ class OCRTextExtractor(QMainWindow):
             return
             
         try:
+            logging.info('Starting OCR processing')
             # Preprocess the image using current tab slider values and deskew option
             contrast = tab_data.get('contrast_value', 1.0)
             brightness = tab_data.get('brightness_value', 1.0)
@@ -885,59 +914,83 @@ class OCRTextExtractor(QMainWindow):
 
             regions = self.extract_layout_regions(processed_cv)
 
-            # Get font type for specialized configurations
-            font_index = tab_data['font_combo'].currentIndex()
-
             # Get PSM and OEM mode from tab data
             psm_mode = tab_data.get('psm_mode', 3)
             oem_mode = tab_data.get('oem_mode', 3)
 
-            # Try different configurations to get the best results
-            text = ""
-
             block_texts = []
-            for x, y, w, h in regions:
-                region = processed_cv[y:y + h, x:x + w]
-                region = self.deskew_region(region)
 
-                candidate_psms = []
-                for candidate in (psm_mode, 6, 4, 3):
-                    if candidate not in candidate_psms:
-                        candidate_psms.append(candidate)
+            # Setup progress bar if UI is present
+            total = len(regions) if regions else 1
+            if not self.headless and hasattr(self, 'progress_bar'):
+                try:
+                    self.progress_bar.setMaximum(total)
+                    self.progress_bar.setValue(0)
+                except Exception:
+                    pass
 
-                best_psm = candidate_psms[0]
-                best_score = -1.0
-                best_word_count = -1
+            for idx, (x, y, w, h) in enumerate(regions):
+                try:
+                    region = processed_cv[y:y + h, x:x + w]
+                    region = self.deskew_region(region)
 
-                for candidate in candidate_psms:
-                    score, word_count = self.score_psm_candidate(region, candidate, oem_mode)
-                    if score > best_score or (score == best_score and word_count > best_word_count):
-                        best_score = score
-                        best_word_count = word_count
-                        best_psm = candidate
+                    candidate_psms = []
+                    for candidate in (psm_mode, 6, 4, 3):
+                        if candidate not in candidate_psms:
+                            candidate_psms.append(candidate)
 
-                region_text = self.reconstruct_text_from_data(region, best_psm, oem_mode)
+                    best_psm = candidate_psms[0]
+                    best_score = -1.0
+                    best_word_count = -1
 
-                if region_text.strip():
-                    block_texts.append(region_text.strip())
+                    for candidate in candidate_psms:
+                        score, word_count = self.score_psm_candidate(region, candidate, oem_mode)
+                        if score > best_score or (score == best_score and word_count > best_word_count):
+                            best_score = score
+                            best_word_count = word_count
+                            best_psm = candidate
+
+                    region_text = self.reconstruct_text_from_data(region, best_psm, oem_mode)
+
+                    if region_text.strip():
+                        block_texts.append(region_text.strip())
+
+                except Exception:
+                    logging.exception('Failed processing region')
+
+                # Update progress
+                if not self.headless and hasattr(self, 'progress_bar'):
+                    try:
+                        self.progress_bar.setValue(idx + 1)
+                        QApplication.processEvents()
+                    except Exception:
+                        pass
 
             text = "\n\n".join(block_texts)
-            
+
             # Store text in tab data
             tab_data['ocr_text'] = text
-            
-            # Display text
-            tab_data['text_edit'].setText(text)
-            
-            # Enable save button
-            self.save_btn.setEnabled(bool(text.strip()))
-            
-            # Update save all button
-            self.update_save_all_button()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"OCR processing failed: {str(e)}")
-            traceback.print_exc()  # Print the full traceback for debugging
+
+            # Display text if UI present
+            if not self.headless and 'text_edit' in tab_data:
+                tab_data['text_edit'].setText(text)
+                # Enable save button
+                try:
+                    self.save_btn.setEnabled(bool(text.strip()))
+                except Exception:
+                    pass
+                # Update save all button
+                self.update_save_all_button()
+
+            logging.info('OCR processing completed')
+
+        except Exception:
+            logging.exception('OCR processing failed')
+            if not self.headless:
+                try:
+                    QMessageBox.critical(self, "Error", "OCR processing failed. See logs for details.")
+                except Exception:
+                    pass
             
     def save_current_text(self):
         """Save the current tab's text to a file"""
@@ -1015,6 +1068,35 @@ class OCRTextExtractor(QMainWindow):
                 # If GUI isn't available for some reason, silently return False
                 pass
             return False
+
+    def open_settings_dialog(self):
+        try:
+            # Simple dialog: ask user to pick the Tesseract executable
+            current = pytesseract.pytesseract.tesseract_cmd if hasattr(pytesseract.pytesseract, 'tesseract_cmd') else ''
+            file_path, _ = QFileDialog.getOpenFileName(self, 'Select Tesseract Executable', current, 'Executable Files (*.exe);;All Files (*)')
+            if file_path:
+                # Save to settings
+                try:
+                    settings = {}
+                    if SETTINGS_PATH.exists():
+                        with open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
+                            settings = json.load(f)
+                except Exception:
+                    settings = {}
+
+                settings['tesseract_path'] = file_path
+                try:
+                    with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
+                        json.dump(settings, f, indent=2)
+                    pytesseract.pytesseract.tesseract_cmd = file_path
+                    logging.info(f'User updated Tesseract path: {file_path}')
+                    QMessageBox.information(self, 'Settings', 'Tesseract path saved. Restart app if necessary.')
+                except Exception:
+                    logging.exception('Failed to save settings')
+                    QMessageBox.critical(self, 'Settings', 'Failed to save settings')
+        except Exception:
+            logging.exception('Failed opening settings dialog')
+
         
     def initUI(self):
         self.setWindowTitle('OCR Text Extractor')
@@ -1047,6 +1129,11 @@ class OCRTextExtractor(QMainWindow):
         save_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Save", self)
         save_action.triggered.connect(self.save_current_text)
         toolbar.addAction(save_action)
+
+        # Settings action
+        settings_action = QAction(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', 'camera_icon.svg')), "Settings", self)
+        settings_action.triggered.connect(self.open_settings_dialog)
+        toolbar.addAction(settings_action)
 
         toolbar.addSeparator()
 
@@ -1107,9 +1194,22 @@ class OCRTextExtractor(QMainWindow):
         # Add buttons to button layout
         button_layout.addWidget(self.load_btn)
         button_layout.addWidget(self.capture_btn)
+        # Add explicit Apply button for sliders
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setStyleSheet(ModernStyle.BUTTON_STYLE)
+        self.apply_btn.setMinimumHeight(40)
+        self.apply_btn.clicked.connect(lambda: self.process_ocr())
+        button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.process_btn)
         button_layout.addWidget(self.save_btn)
         button_layout.addWidget(self.save_all_btn)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        button_layout.addWidget(self.progress_bar)
         
         # Add button layout to main layout
         main_layout.addLayout(button_layout)
@@ -1128,6 +1228,14 @@ class OCRTextExtractor(QMainWindow):
         
         # Show the window maximized by default
         self.showMaximized()
+
+        # Keyboard shortcuts
+        try:
+            QShortcut(QKeySequence('Ctrl+O'), self).activated.connect(self.load_image)
+            QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(self.save_current_text)
+            QShortcut(QKeySequence('Ctrl+P'), self).activated.connect(lambda: self.process_ocr())
+        except Exception:
+            logging.exception('Failed to create keyboard shortcuts')
 
     def toggle_theme(self):
         self.dark_mode = not self.dark_mode
@@ -1598,6 +1706,73 @@ def main():
     window = OCRTextExtractor()
     window.show()
     sys.exit(app.exec_())
+
+
+def process_image_file_cli(input_path, out_path=None, contrast=1.0, brightness=1.0, sharpness=1.0, deskew=True, use_adaptive=False, psm_mode=3, oem_mode=3):
+    """Headless processing for a single image file. Writes text output to out_path or next to image."""
+    try:
+        extractor = OCRTextExtractor(headless=True)
+        cv_image = cv2.imread(input_path)
+        if cv_image is None:
+            logging.error(f'Failed to load image: {input_path}')
+            return False
+
+        preprocessed = extractor.preprocess_image(cv_image, contrast=contrast, brightness=brightness, sharpness=sharpness, deskew=deskew, use_adaptive_threshold=use_adaptive)
+        processed_cv = np.array(preprocessed.convert('RGB'))
+        processed_cv = cv2.cvtColor(processed_cv, cv2.COLOR_RGB2BGR)
+
+        regions = extractor.extract_layout_regions(processed_cv)
+
+        block_texts = []
+        for (x, y, w, h) in regions:
+            region = processed_cv[y:y + h, x:x + w]
+            region = extractor.deskew_region(region)
+
+            candidate_psms = []
+            for candidate in (psm_mode, 6, 4, 3):
+                if candidate not in candidate_psms:
+                    candidate_psms.append(candidate)
+
+            best_psm = candidate_psms[0]
+            best_score = -1.0
+            best_word_count = -1
+
+            for candidate in candidate_psms:
+                score, word_count = extractor.score_psm_candidate(region, candidate, oem_mode)
+                if score > best_score or (score == best_score and word_count > best_word_count):
+                    best_score = score
+                    best_word_count = word_count
+                    best_psm = candidate
+
+            region_text = extractor.reconstruct_text_from_data(region, best_psm, oem_mode)
+            if region_text.strip():
+                block_texts.append(region_text.strip())
+
+        text = "\n\n".join(block_texts)
+
+        if out_path:
+            try:
+                with open(out_path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                logging.info(f'Wrote OCR output to {out_path}')
+            except Exception:
+                logging.exception('Failed to write output')
+                return False
+        else:
+            base = os.path.splitext(input_path)[0]
+            out_file = base + '.txt'
+            try:
+                with open(out_file, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                logging.info(f'Wrote OCR output to {out_file}')
+            except Exception:
+                logging.exception('Failed to write output')
+                return False
+
+        return True
+    except Exception:
+        logging.exception('CLI processing failed')
+        return False
 
 if __name__ == "__main__":
     main()
